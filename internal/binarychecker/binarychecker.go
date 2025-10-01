@@ -216,9 +216,8 @@ func checkGoBinaryFIPS(ctx context.Context, filePath string) (GoBinaryReportDeta
 		return details, fmt.Errorf("failed to read build info: %w", err)
 	}
 
-	// Extract Go version and check for X:systemcrypto experiment
+	// Extract Go version
 	details.GoVersion = info.GoVersion
-	hasGoVersionSystemcrypto := strings.Contains(info.GoVersion, "X:systemcrypto")
 
 	// Extract module path
 	if info.Main.Path != "" {
@@ -226,7 +225,6 @@ func checkGoBinaryFIPS(ctx context.Context, filePath string) (GoBinaryReportDeta
 	}
 
 	// Check build settings for CGO and GOEXPERIMENT=systemcrypto
-	hasGoExperimentSystemcrypto := false
 	for _, setting := range info.Settings {
 		switch setting.Key {
 		case "CGO_ENABLED":
@@ -234,13 +232,10 @@ func checkGoBinaryFIPS(ctx context.Context, filePath string) (GoBinaryReportDeta
 		case "GOEXPERIMENT":
 			// Check if systemcrypto experiment is enabled
 			if strings.Contains(setting.Value, "systemcrypto") {
-				hasGoExperimentSystemcrypto = true
+				details.UseSystemcrypto = true
 			}
 		}
 	}
-
-	// UseSystemcrypto is true only if both GoVersion and GOEXPERIMENT have systemcrypto
-	details.UseSystemcrypto = hasGoVersionSystemcrypto && hasGoExperimentSystemcrypto
 
 	passed, panicLog, err := checkRuntimeFIPS(ctx, filePath)
 	if err != nil {
