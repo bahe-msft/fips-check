@@ -31,63 +31,57 @@ echo ""
 
 # Check if runtime image is distroless
 echo "==================================================================="
-echo "Checking if runtime image is distroless-based"
+echo "Checking if runtime image has OpenSSL binary"
 echo "==================================================================="
 
 # Pull the runtime image to inspect it
 docker pull "$RUNTIME_IMAGE" >/dev/null 2>&1 || true
 
-# Check if the image is distroless by inspecting common distroless characteristics:
-# 1. No shell (/bin/sh, /bin/bash)
-# 2. Very minimal file system
-# 3. Image labels or repository name containing "distroless"
+# Check if the image has OpenSSL binary by trying to execute it
+HAS_OPENSSL=false
 
-IS_DISTROLESS=false
-
-# Check image config for distroless indicators
-IMAGE_INFO=$(docker image inspect "$RUNTIME_IMAGE" 2>/dev/null || echo "[]")
-
-# Check if image name contains "distroless"
-if echo "$RUNTIME_IMAGE" | grep -iq "distroless"; then
-    IS_DISTROLESS=true
-    echo "✗ Image name contains 'distroless'"
-fi
-
-# Try to run a shell command to detect if shell exists
-if [ "$IS_DISTROLESS" = false ]; then
-    if ! docker run --rm --entrypoint /bin/sh "$RUNTIME_IMAGE" -c "echo test" >/dev/null 2>&1; then
-        if ! docker run --rm --entrypoint /bin/bash "$RUNTIME_IMAGE" -c "echo test" >/dev/null 2>&1; then
-            IS_DISTROLESS=true
-            echo "✗ No shell found in image (likely distroless)"
-        fi
+# Try common OpenSSL binary locations
+for openssl_path in /usr/bin/openssl /bin/openssl /usr/local/bin/openssl openssl; do
+    if docker run --rm --entrypoint sh "$RUNTIME_IMAGE" -c "command -v $openssl_path" >/dev/null 2>&1; then
+        HAS_OPENSSL=true
+        echo "✓ Found OpenSSL binary at: $openssl_path"
+        break
     fi
-fi
+done
 
-# Check for very small image size (distroless images are typically very small)
-IMAGE_SIZE=$(echo "$IMAGE_INFO" | jq -r '.[0].Size // 0' 2>/dev/null || echo "0")
-if [ "$IS_DISTROLESS" = false ] && [ "$IMAGE_SIZE" -gt 0 ] && [ "$IMAGE_SIZE" -lt 20000000 ]; then
-    # Less than 20MB is a strong indicator of distroless
-    echo "ℹ Image size is very small ($IMAGE_SIZE bytes), possible distroless indicator"
+# If no shell, try direct execution
+if [ "$HAS_OPENSSL" = false ]; then
+    if docker run --rm --entrypoint /usr/bin/openssl "$RUNTIME_IMAGE" version >/dev/null 2>&1; then
+        HAS_OPENSSL=true
+        echo "✓ Found OpenSSL binary at: /usr/bin/openssl"
+    elif docker run --rm --entrypoint /bin/openssl "$RUNTIME_IMAGE" version >/dev/null 2>&1; then
+        HAS_OPENSSL=true
+        echo "✓ Found OpenSSL binary at: /bin/openssl"
+    fi
 fi
 
 echo ""
 
-if [ "$IS_DISTROLESS" = true ]; then
+if [ "$HAS_OPENSSL" = false ]; then
     echo "==================================================================="
     echo "FIPS Compliance Check Result: NON-COMPLIANT"
     echo "==================================================================="
-    echo "Reason: Runtime image is distroless-based"
+    echo "Reason: Runtime image does not contain OpenSSL binary"
     echo ""
-    echo "Distroless images do not contain the necessary tools and libraries"
-    echo "required for FIPS compliance verification. They lack:"
-    echo "  - Shell utilities needed for runtime checks"
-    echo "  - Standard system libraries"
-    echo "  - FIPS-enabled OpenSSL or cryptographic libraries"
+    echo "Images without OpenSSL cannot support FIPS compliance because:"
+    echo "  - FIPS mode requires OpenSSL with FIPS module"
+    echo "  - Go systemcrypto depends on OpenSSL for cryptographic operations"
+    echo "  - No OpenSSL means no FIPS cryptographic provider available"
+    echo ""
+    echo "This is common in:"
+    echo "  - Distroless images"
+    echo "  - Minimal/scratch-based images"
+    echo "  - Images using alternative crypto libraries"
     echo "==================================================================="
     exit 1
 fi
 
-echo "✓ Runtime image is not distroless-based, proceeding with FIPS check"
+echo "✓ Runtime image has OpenSSL binary, proceeding with FIPS check"
 echo ""
 
 # Phase 2: Build the Docker image
