@@ -156,5 +156,4 @@ Summary:
 
 The tool automatically detects distroless images and exits with an error, as they:
 - Lack necessary libraries for FIPS verification
-- Don't contain shell utilities
 - Cannot support FIPS-enabled OpenSSL
