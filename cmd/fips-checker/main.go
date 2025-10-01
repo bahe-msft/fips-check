@@ -39,6 +39,9 @@ func printReports(reports []binarychecker.BinaryReport) {
 		return
 	}
 
+	// Check if host is FIPS capable
+	hostFIPSCapable := openssl.FIPSCapable()
+
 	// Count statistics
 	systemcryptoCount := 0
 	failedCount := 0
@@ -67,23 +70,20 @@ func printReports(reports []binarychecker.BinaryReport) {
 		}
 		fmt.Printf("    CGO Enabled: %t\n", details.CGOEnabled)
 		fmt.Printf("    Uses Systemcrypto: %t\n", details.UseSystemcrypto)
+		fmt.Printf("    Fails on FIPS Check: %t\n", details.FailsOnFIPSCheck)
 
-		// Always report FIPS status
+		// Report FIPS status
 		if !details.UseSystemcrypto {
-			fmt.Printf("    Fails on FIPS Check: %t\n", details.FailsOnFIPSCheck)
-			fmt.Printf("    ⚠️  FIPS Status: NOT FIPS ENABLED (no systemcrypto)\n")
-			printRuntimeOutput(details.RuntimePanicLog)
+			fmt.Printf("    ❌ FIPS Status: NOT COMPLIANT (systemcrypto not in use)\n")
+		} else if details.FailsOnFIPSCheck {
+			fmt.Printf("    ❌ FIPS Status: NOT COMPLIANT (runtime check fails)\n")
+		} else if !hostFIPSCapable {
+			fmt.Printf("    ❌ FIPS Status: NOT COMPLIANT (host not FIPS capable)\n")
 		} else {
-			fmt.Printf("    Fails on FIPS Check: %t\n", details.FailsOnFIPSCheck)
-
-			if details.FailsOnFIPSCheck {
-				fmt.Printf("    ❌ FIPS Status: NOT COMPLIANT\n")
-			} else {
-				fmt.Printf("    ✅ FIPS Status: MIGHT BE COMPLIANT\n")
-			}
-
-			printRuntimeOutput(details.RuntimePanicLog)
+			fmt.Printf("    ✅ FIPS Status: COMPLIANT\n")
 		}
+
+		printRuntimeOutput(details.RuntimePanicLog)
 
 		if report.Error != nil {
 			fmt.Printf("    ⚠️  Error: %v\n", report.Error)
@@ -112,7 +112,14 @@ func printRuntimeOutput(log string) {
 }
 
 func checkHost() {
-	fmt.Printf("Host:\n")
-	fmt.Printf("- OpenSSL version: %s\n", openssl.VersionText())
-	fmt.Printf("- OpenSSL FIPS capable: %t\n", openssl.FIPSCapable())
+	fmt.Printf("\n=== Host FIPS Environment Check ===\n")
+	fmt.Printf("OpenSSL Version: %s\n", openssl.VersionText())
+	fmt.Printf("FIPS Capable: %t\n", openssl.FIPSCapable())
+
+	if openssl.FIPSCapable() {
+		fmt.Printf("✅ Status: Host is FIPS capable\n")
+	} else {
+		fmt.Printf("⚠️  Status: Host is NOT FIPS capable\n")
+	}
+	fmt.Println()
 }
