@@ -40,15 +40,11 @@ The tool uses a two-phase approach to determine FIPS compliance:
 ### Phase 1: Static Analysis
 Extracts build information from Go binaries using `debug/buildinfo`:
 
-1. **Go Version Check**: Verifies the binary contains `X:systemcrypto` in the Go version string
-   - Example: `go1.24.4 X:systemcrypto`
-
-2. **Build Settings Check**: Inspects build settings for:
+1. **Build Settings Check**: Inspects build settings for:
    - `CGO_ENABLED=1` - Required for OpenSSL integration
    - `GOEXPERIMENT=systemcrypto` - Enables system crypto backend
 
-3. **Systemcrypto Flag**: A binary is marked as using systemcrypto **only if both** conditions are met:
-   - Go version contains `X:systemcrypto`
+2. **Systemcrypto Flag**: A binary is marked as using systemcrypto if:
    - Build settings contain `GOEXPERIMENT=systemcrypto`
 
 ### Phase 2: Runtime Verification
@@ -72,16 +68,16 @@ Tests actual FIPS capability by executing the binary:
 
 | Condition | Status |
 |-----------|--------|
-| Systemcrypto enabled + Runtime check passed | ✅ **MIGHT BE COMPLIANT** |
-| Systemcrypto enabled + Runtime check failed | ❌ **NOT COMPLIANT** |
-| No systemcrypto | ⚠️ **NOT FIPS ENABLED** |
+| No systemcrypto | ❌ **NOT COMPLIANT (systemcrypto not in use)** |
+| Systemcrypto enabled + Runtime check failed | ❌ **NOT COMPLIANT (runtime check fails)** |
+| Systemcrypto enabled + Runtime check passed + Host not FIPS capable | ❌ **NOT COMPLIANT (host not FIPS capable)** |
+| Systemcrypto enabled + Runtime check passed + Host FIPS capable | ✅ **COMPLIANT** |
 
-**Note**: "MIGHT BE COMPLIANT" means the binary has the necessary FIPS components, but actual compliance depends on the host system having FIPS-enabled OpenSSL available.
+**Note**: Full compliance requires systemcrypto enabled, passing runtime checks, and a FIPS-capable OpenSSL on the host system.
 
 ## What It Checks
 
 ### Static Analysis
-- Go version with `X:systemcrypto` experiment
 - CGO enabled
 - `GOEXPERIMENT=systemcrypto` build setting
 
@@ -93,17 +89,19 @@ Tests actual FIPS capability by executing the binary:
 ## Report Output
 
 For each Go binary found:
-- **✅ MIGHT BE COMPLIANT**: Binary has systemcrypto enabled and passes runtime check
-- **❌ NOT COMPLIANT**: Binary has systemcrypto but fails runtime FIPS check
-- **⚠️ NOT FIPS ENABLED**: Binary doesn't use systemcrypto
+- **✅ COMPLIANT**: Binary has systemcrypto enabled, passes runtime check, and host is FIPS capable
+- **❌ NOT COMPLIANT (systemcrypto not in use)**: Binary doesn't use systemcrypto
+- **❌ NOT COMPLIANT (runtime check fails)**: Binary has systemcrypto but fails runtime FIPS check
+- **❌ NOT COMPLIANT (host not FIPS capable)**: Binary passes checks but host OpenSSL is not FIPS capable
 
 ### Sample Output
 
 **FIPS Compliant Binary:**
 ```
-Host:
-- OpenSSL version: OpenSSL 3.0.8 7 Feb 2023
-- OpenSSL FIPS capable: true
+=== Host FIPS Environment Check ===
+OpenSSL Version: OpenSSL 3.0.8 7 Feb 2023
+FIPS Capable: true
+✅ Status: Host is FIPS capable
 
 === Binary FIPS Check Report ===
 Total binaries scanned: 1
@@ -119,7 +117,7 @@ Binaries that fail FIPS check: 0
     CGO Enabled: true
     Uses Systemcrypto: true
     Fails on FIPS Check: false
-    ✅ FIPS Status: MIGHT BE COMPLIANT
+    ✅ FIPS Status: COMPLIANT
 
 ─────────────────────────────────────────────────────
 Summary:
@@ -128,9 +126,10 @@ Summary:
 
 **Non-FIPS Binary:**
 ```
-Host:
-- OpenSSL version: OpenSSL 3.0.8 7 Feb 2023
-- OpenSSL FIPS capable: true
+=== Host FIPS Environment Check ===
+OpenSSL Version: OpenSSL 3.0.8 7 Feb 2023
+FIPS Capable: true
+✅ Status: Host is FIPS capable
 
 === Binary FIPS Check Report ===
 Total binaries scanned: 1
@@ -146,7 +145,7 @@ Binaries that fail FIPS check: 1
     CGO Enabled: false
     Uses Systemcrypto: false
     Fails on FIPS Check: true
-    ⚠️  FIPS Status: NOT FIPS ENABLED (no systemcrypto)
+    ❌ FIPS Status: NOT COMPLIANT (systemcrypto not in use)
 
 ─────────────────────────────────────────────────────
 Summary:
