@@ -1,98 +1,107 @@
 //go:build cgo
 
-// Package fipscheck provides FIPS compliance checking functionality for Go binaries.
-// This package exposes the functionality from internal packages to allow external
-// repositories to use the FIPS checking capabilities.
+// Package fipscheck provides FIPS compliance checking functionality for container images.
 package fipscheck
 
 import (
 	"context"
-
-	"github.com/bahe-msft/fips-check/internal/binarychecker"
-	_ "github.com/bahe-msft/fips-check/internal/opensslsetup" // Initialize OpenSSL
-	"github.com/golang-fips/openssl/v2"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
 )
 
-// BinaryReport contains the FIPS compliance information for a binary file.
-// This mirrors the internal BinaryReport structure to provide external access.
-type BinaryReport struct {
-	// RelativePath is the path of the binary relative to the scan root
-	RelativePath string
-	// Type indicates the type of binary (e.g., "gobinary")
-	Type            string
-	GoBinaryDetails GoBinaryReportDetails
-	// Error contains any error that occurred while scanning this binary
-	Error error
+// ImageFIPSResult contains the FIPS compliance result for a container image.
+type ImageFIPSResult struct {
+	ImageRef          string
+	IsCompliant       bool
+	Reason           string
+	BinariesFound    int
+	CompliantBinaries int
+	DetailedReport   string // Full detailed report like the CLI output
 }
 
-// GoBinaryReportDetails contains detailed information about a Go binary's FIPS capabilities.
-type GoBinaryReportDetails struct {
-	GoVersion        string
-	Module           string
-	UseSystemcrypto  bool
-	CGOEnabled       bool
-	FailsOnFIPSCheck bool   // Indicates if the binary fails when run with GOFIPS=1
-	RuntimePanicLog  string // Captures the panic log from runtime FIPS check
-}
+// CheckImageFIPSCompliance checks if a container image is FIPS compliant.
+// It accepts an image reference and returns the compliance status with all checks embedded.
+func CheckImageFIPSCompliance(ctx context.Context, imageRef string) (*ImageFIPSResult, error) {
+	buildImage := "mcr.microsoft.com/oss/go/microsoft/golang:1.24-fips-azurelinux3.0"
 
+	// Generate unique tag for this check
+	imageTag := fmt.Sprintf("fips-checker-%d", time.Now().Unix())
 
-// CheckBinaries recursively scans the filesystem starting from the given path
-// and checks all binaries for FIPS compliance in parallel.
-// It returns a slice of BinaryReport containing the results for each binary found.
-func CheckBinaries(ctx context.Context, path string) ([]BinaryReport, error) {
-	internalReports, err := binarychecker.Check(ctx, path)
-	if err != nil {
-		return nil, err
+	// Build and run the FIPS checker
+	buildCmd := exec.CommandContext(ctx, "docker", "build",
+		"--build-arg", fmt.Sprintf("BUILD_IMAGE=%s", buildImage),
+		"--build-arg", fmt.Sprintf("RUNTIME_IMAGE=%s", imageRef),
+		"-t", imageTag,
+		".")
+
+	if err := buildCmd.Run(); err != nil {
+		return &ImageFIPSResult{
+			ImageRef:    imageRef,
+			IsCompliant: false,
+			Reason:      fmt.Sprintf("Failed to build checker: %v", err),
+		}, nil
 	}
 
-	// Convert internal reports to public SDK reports
-	reports := make([]BinaryReport, len(internalReports))
-	for i, report := range internalReports {
-		reports[i] = BinaryReport{
-			RelativePath: report.RelativePath,
-			Type:         report.Type,
-			GoBinaryDetails: GoBinaryReportDetails{
-				GoVersion:        report.GoBinaryDetails.GoVersion,
-				Module:           report.GoBinaryDetails.Module,
-				UseSystemcrypto:  report.GoBinaryDetails.UseSystemcrypto,
-				CGOEnabled:       report.GoBinaryDetails.CGOEnabled,
-				FailsOnFIPSCheck: report.GoBinaryDetails.FailsOnFIPSCheck,
-				RuntimePanicLog:  report.GoBinaryDetails.RuntimePanicLog,
-			},
-			Error: report.Error,
+	// Clean up image after check
+	defer func() {
+		exec.Command("docker", "rmi", imageTag).Run()
+	}()
+
+	// Run the checker and capture output
+	runCmd := exec.CommandContext(ctx, "docker", "run", "--rm", imageTag)
+	output, err := runCmd.CombinedOutput()
+	if err != nil {
+		return &ImageFIPSResult{
+			ImageRef:    imageRef,
+			IsCompliant: false,
+			Reason:      fmt.Sprintf("Checker failed: %v", err),
+		}, nil
+	}
+
+	// Parse the output to determine compliance
+	outputStr := string(output)
+
+	// Check for distroless/no OpenSSL case
+	if strings.Contains(outputStr, "Runtime image does not contain OpenSSL binary") {
+		return &ImageFIPSResult{
+			ImageRef:    imageRef,
+			IsCompliant: false,
+			Reason:      "Image lacks OpenSSL binary (likely distroless)",
+		}, nil
+	}
+
+	// Count binaries and compliant ones
+	binariesFound := 0
+	compliantBinaries := 0
+
+	lines := strings.Split(outputStr, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "✅ FIPS Status: COMPLIANT") {
+			compliantBinaries++
+		} else if strings.Contains(line, "❌ FIPS Status: NOT COMPLIANT") {
+			binariesFound++
+		}
+	}
+	binariesFound += compliantBinaries
+
+	isCompliant := binariesFound > 0 && compliantBinaries == binariesFound
+	reason := "All binaries are FIPS compliant"
+	if !isCompliant {
+		if binariesFound == 0 {
+			reason = "No Go binaries found"
+		} else {
+			reason = fmt.Sprintf("%d of %d binaries are not FIPS compliant", binariesFound-compliantBinaries, binariesFound)
 		}
 	}
 
-	return reports, nil
-}
-
-// HostFIPSInfo contains information about the host's FIPS capabilities.
-type HostFIPSInfo struct {
-	OpenSSLVersion string
-	FIPSCapable    bool
-}
-
-// CheckHostFIPS returns information about the host's FIPS capabilities.
-// This function checks the OpenSSL version and FIPS capability of the current host.
-func CheckHostFIPS() HostFIPSInfo {
-	return HostFIPSInfo{
-		OpenSSLVersion: openssl.VersionText(),
-		FIPSCapable:    openssl.FIPSCapable(),
-	}
-}
-
-
-// IsBinaryFIPSCompliant determines if a binary is FIPS compliant based on the report details.
-// A binary is considered FIPS compliant if:
-// - It uses systemcrypto (GOEXPERIMENT=systemcrypto)
-// - It doesn't fail the runtime FIPS check
-// - The host system is FIPS capable
-func IsBinaryFIPSCompliant(details GoBinaryReportDetails, hostFIPSCapable bool) bool {
-	if !details.UseSystemcrypto {
-		return false
-	}
-	if details.FailsOnFIPSCheck {
-		return false
-	}
-	return hostFIPSCapable
+	return &ImageFIPSResult{
+		ImageRef:          imageRef,
+		IsCompliant:       isCompliant,
+		Reason:           reason,
+		BinariesFound:    binariesFound,
+		CompliantBinaries: compliantBinaries,
+		DetailedReport:   outputStr,
+	}, nil
 }
